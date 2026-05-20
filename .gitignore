@@ -7,3 +7,8 @@ __pycache__/
  
 # Windows
 Thumbs.db
+
+# virtual environment
+.venv
+
+test_materials/

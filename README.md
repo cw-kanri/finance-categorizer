@@ -11,7 +11,8 @@
 ## セットアップ
 
 ```powershell
-pip install -r requirements.txt
+uv venv
+uv pip install -r requirements.txt
 ```
 
 画像PDFのOCRには、別途以下が必要です。
@@ -23,13 +24,13 @@ pip install -r requirements.txt
 ## 実行例
 
 ```powershell
-python .\pdf_text_extractor.py .\sample.pdf
+uv run python .\pdf_text_extractor.py .\test_materials\input\sample.pdf
 ```
 
 日本語と英語をOCR対象にする設定がデフォルトです。
 
 ```powershell
-python .\pdf_text_extractor.py .\sample.pdf --lang jpn+eng --dpi 300
+uv run python .\pdf_text_extractor.py .\test_materials\input\sample.pdf --lang jpn+eng --dpi 300
 ```
 
 ログは標準エラー、JSONは標準出力に出力します。
@@ -39,7 +40,7 @@ python .\pdf_text_extractor.py .\sample.pdf --lang jpn+eng --dpi 300
 PDFから抽出したテキストをもとに、銀行振込明細の主要項目をJSONで出力できます。
 
 ```powershell
-python .\pdf_text_extractor.py .\transfer.pdf --extract bank-transfer
+uv run python .\pdf_text_extractor.py .\test_materials\input\transfer.pdf --extract bank-transfer
 ```
 
 出力形式:
@@ -55,35 +56,66 @@ python .\pdf_text_extractor.py .\transfer.pdf --extract bank-transfer
 
 抽出できない項目は `null` になります。推測はせず、`振込日`、`振込金額`、`手数料`、`支払先`、`振込先`、`受取人名` などのラベルが見つかった場合だけ抽出します。
 
-## フォルダ内PDFの自動仕分け
+## 添付用PDFの準備
 
-フォルダ内のPDFを1ファイルずつ解析し、分類、リネーム、フォルダ作成、移動またはコピーを行います。
+`test_materials\input` に入っているPDF・PNG・JPGをすべて解析し、内容から日付・相手先・金額などを読み取り、仕訳に添付しやすいファイル名へリネームしたコピーを作成します。サブフォルダ内のファイルも対象です。
 
-まずは実行計画だけ確認します。
+PDF素材はリポジトリ内の `test_materials\input` に置きます。このフォルダはGit追跡外です。
 
-```powershell
-python .\accounting_pdf_sorter.py "C:\Users\インターン）奥谷豊\Downloads"
-```
-
-実行計画は `sorted_pdfs\sort_manifest_dry_run.json` に出力されます。実際に仕分ける場合は `--apply` を付けます。
+通常実行では、`test_materials\input` を読み込み、実行時刻ごとのフォルダを `test_materials\output` の下に作成します。添付用ファイルはその中の `attachments` に出力します。元ファイルは削除しません。
 
 ```powershell
-python .\accounting_pdf_sorter.py "C:\Users\インターン）奥谷豊\Downloads" --apply
+uv run python .\accounting_pdf_sorter.py
 ```
 
-元ファイルを残したい場合はコピーで仕分けできます。
+同時に、元ファイル名・出力ファイル名・日付・相手先・金額・ページ番号を一覧化した `attachment_index.csv` と `attachment_index.json` を実行時刻フォルダに出力します。
+
+```text
+test_materials/output/
+  20260520_104909/
+    attachments/
+      renamed.pdf
+      renamed.png
+    attachment_index.csv
+    attachment_index.json
+```
+
+コピーやページ分割をせず、一覧だけ確認したい場合は `--dry-run` を付けます。
 
 ```powershell
-python .\accounting_pdf_sorter.py "C:\Users\インターン）奥谷豊\Downloads" --apply --action copy
+uv run python .\accounting_pdf_sorter.py --dry-run
 ```
 
-### 仕分けロジック
+確認用の一覧は実行時刻フォルダ内の `attachment_index_dry_run.csv` と `attachment_index_dry_run.json` に出力されます。
 
-PDF本文を `pdfplumber` で抽出し、文字が取れない画像PDFは `pytesseract` でOCRします。そのテキストに含まれる明示的なキーワードで分類します。
+複数ページPDFは、デフォルトで1ページずつ分割して添付用PDFを作成します。分割せず元PDF単位でコピーしたい場合は `--no-split-pages` を指定します。
+
+```powershell
+uv run python .\accounting_pdf_sorter.py --no-split-pages
+```
+
+別フォルダで試したい場合だけ、入力フォルダと出力フォルダを明示します。
+
+```powershell
+uv run python .\accounting_pdf_sorter.py ".\another_input" --output-dir ".\another_output"
+```
+
+実行フォルダ名を固定したい場合は `--run-name` を指定します。
+
+```powershell
+uv run python .\accounting_pdf_sorter.py --run-name "2026-04月分_確認01"
+```
+
+### 読み取りロジック
+
+PDF本文を `pdfplumber` で抽出し、文字が取れない画像PDFやPNG/JPGは `pytesseract` でOCRします。OCRできない場合でも、ファイル名と親フォルダ名から日付・相手先・金額・書類種別を補います。
 
 - `bank_transfer`: `振込日`、`振込金額`、`振込先`、`受取人名`、`振込明細`
 - `invoice`: `請求書`、`請求金額`、`お支払期限`、`インボイス`
 - `receipt`: `領収書`、`領収証`、`レシート`
+- `expense_claim`: `経費申請`、`立替経費`、`外注費`、`出張宿泊費`
+- `credit_card_statement`: `クレジットカード`、`カード利用`、`楽天カード`
+- `payment_notice`: `検収通知書`、`支払通知書`、`入金予定`
 - `quote`: `見積書`
 - `purchase_order`: `注文書`、`発注書`
 - `statement`: `利用明細`、`取引明細`、`入出金明細`
@@ -92,37 +124,40 @@ PDF本文を `pdfplumber` で抽出し、文字が取れない画像PDFは `pyte
 - `contract`: `契約書`
 - `unknown`: 明示キーワードが見つからないPDF
 
-### フォルダ作成ロジック
+### 出力ロジック
 
-出力先はデフォルトで入力フォルダ配下の `sorted_pdfs` です。フォルダは以下の形式で作成します。
+出力先はデフォルトで `test_materials\output` です。実行ごとに時刻フォルダを作り、その中に添付用ファイルと一覧を作成します。
 
 ```text
-sorted_pdfs/
-  YYYY-MM/
-    document_type/
+test_materials/output/
+  YYYYMMDD_HHMMSS/
+    attachments/
       renamed.pdf
+      renamed.png
+    attachment_index.csv
+    attachment_index.json
 ```
 
-日付が取れない場合は `date_unknown` に入ります。
+日付が取れない場合はファイル名に `date_unknown` を使います。
 
 ### リネームロジック
 
 ファイル名は以下の形式です。
 
 ```text
-YYYY-MM-DD_document_type_payee_amount_original-id.pdf
+YYYY-MM-DD_payee_amount_document_type_original-id.pdf
 ```
 
 例:
 
 ```text
-2026-04-13_bank_transfer_株式会社サンプル_123456_0125_PJ34_0000426_202604131.pdf
+2026-04-13_株式会社サンプル_123456_bank_transfer_0125_PJ34_0000426_202604131.pdf
 ```
 
-抽出できない値は `date_unknown`、`payee_unknown`、`amount_unknown` を使います。同名ファイルがある場合は `_001`、`_002` の連番を付けます。
+抽出できない値は `date_unknown`、`payee_unknown`、`amount_unknown` を使います。複数ページを分割した場合は `_p01`、`_p02` のページ番号を付けます。同名ファイルがある場合は `_001`、`_002` の連番を付けます。
 
 総合振込明細のように1PDF内に複数の振込先がある場合、単一の支払先名は推測せず `payee_unknown` にします。金額と手数料は、明示された `本支店仕向`、`他行仕向` の合計欄から集計します。
 
 ### 仕訳に向けた出力
 
-`sort_manifest.json` には `journal_hint` を出力します。銀行振込明細では貸方を `普通預金` として出しますが、借方勘定科目は推測せず `null` にします。最終的な自動仕訳では、取引先マスタや摘要ルールを追加して借方科目を決定します。
+`attachment_index.csv` には、仕訳時に見たい `source_file`、`output_file`、`document_type`、`date`、`counterparty`、`amount`、`fee`、`page`、`page_count` を出力します。最終的な分類や勘定科目判断は人間が行う前提です。
