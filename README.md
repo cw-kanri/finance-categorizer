@@ -1,163 +1,140 @@
-# PDF Text Extractor
+# PDF Invoice Sorter
 
-1ファイルずつPDFを処理し、以下のJSON形式で全文テキストを出力します。
+PDF/画像の請求書を読み取り、仕訳前に人が確認しやすいファイル名と一覧表へ整理する小さなPythonツールです。
 
-```json
-{
-  "text": "全文テキスト"
-}
-```
+## できること
+
+- `test_materials/input` 以下の PDF/PNG/JPG/TIFF/BMP をまとめて処理
+- PDFに埋め込みテキストがあれば `pdfplumber` で抽出
+- 画像PDFや画像ファイルはローカルOCR、またはAzure Document Intelligenceで抽出
+- 日付、取引先、金額、手数料、文書種別を推定
+- 元ファイルを消さず、`test_materials/output/<実行時刻>/attachments` にコピー
+- `attachment_index.csv` と `attachment_index.json` を出力
 
 ## セットアップ
+
+Windowsで初めて使う人向けの詳しい手順は [WINDOWS_SETUP.md](WINDOWS_SETUP.md) を見てください。
+
+`uv` がまだ入っていない場合は、PowerShellで次を実行します。
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+PowerShellを開き直して、インストールを確認します。
+
+```powershell
+uv --version
+```
+
+その後、リポジトリのフォルダでPython環境を作ります。
 
 ```powershell
 uv venv
 uv pip install -r requirements.txt
 ```
 
-画像PDFのOCRには、別途以下が必要です。
+ローカルOCRを使う場合は、Pythonライブラリに加えて以下も必要です。
 
 - Tesseract OCR
-- 日本語言語データ `jpn`
-- `pdf2image` 用の Poppler
+- Tesseractの日本語データ `jpn`
+- Poppler (`pdf2image` がPDFを画像化するために使用)
 
-## 実行例
+クラウドOCRを使う場合、ローカルOCR用の外部コマンドは不要です。
 
-```powershell
-uv run python .\pdf_text_extractor.py .\test_materials\input\sample.pdf
-```
+## まず動かす
 
-日本語と英語をOCR対象にする設定がデフォルトです。
+既定では `--extractor auto` で動きます。Azureの環境変数が設定されていればAzure Document Intelligenceを使い、未設定ならローカル抽出に自動で切り替わります。
 
-```powershell
-uv run python .\pdf_text_extractor.py .\test_materials\input\sample.pdf --lang jpn+eng --dpi 300
-```
-
-ログは標準エラー、JSONは標準出力に出力します。
-
-## 銀行振込明細の抽出
-
-PDFから抽出したテキストをもとに、銀行振込明細の主要項目をJSONで出力できます。
-
-```powershell
-uv run python .\pdf_text_extractor.py .\test_materials\input\transfer.pdf --extract bank-transfer
-```
-
-出力形式:
-
-```json
-{
-  "date": "2026年5月19日",
-  "payee": "株式会社サンプル",
-  "amount": "100,000円",
-  "fee": "330円"
-}
-```
-
-抽出できない項目は `null` になります。推測はせず、`振込日`、`振込金額`、`手数料`、`支払先`、`振込先`、`受取人名` などのラベルが見つかった場合だけ抽出します。
-
-## 添付用PDFの準備
-
-`test_materials\input` に入っているPDF・PNG・JPGをすべて解析し、内容から日付・相手先・金額などを読み取り、仕訳に添付しやすいファイル名へリネームしたコピーを作成します。サブフォルダ内のファイルも対象です。
-
-PDF素材はリポジトリ内の `test_materials\input` に置きます。このフォルダはGit追跡外です。
-
-通常実行では、`test_materials\input` を読み込み、実行時刻ごとのフォルダを `test_materials\output` の下に作成します。添付用ファイルはその中の `attachments` に出力します。元ファイルは削除しません。
+仕分けしたいPDF請求書や画像ファイルは、実行前に `test_materials/input` に入れてください。このフォルダはリポジトリに含めていますが、中に入れた請求書ファイルはGit管理しない想定です。
 
 ```powershell
 uv run python .\accounting_pdf_sorter.py
 ```
 
-同時に、元ファイル名・出力ファイル名・日付・相手先・金額・ページ番号を一覧化した `attachment_index.csv` と `attachment_index.json` を実行時刻フォルダに出力します。
-
-```text
-test_materials/output/
-  20260520_104909/
-    attachments/
-      renamed.pdf
-      renamed.png
-    attachment_index.csv
-    attachment_index.json
-```
-
-コピーやページ分割をせず、一覧だけ確認したい場合は `--dry-run` を付けます。
+確認だけしたい場合:
 
 ```powershell
 uv run python .\accounting_pdf_sorter.py --dry-run
 ```
 
-確認用の一覧は実行時刻フォルダ内の `attachment_index_dry_run.csv` と `attachment_index_dry_run.json` に出力されます。
+別フォルダを処理する場合:
 
-複数ページPDFは、デフォルトで1ページずつ分割して添付用PDFを作成します。分割せず元PDF単位でコピーしたい場合は `--no-split-pages` を指定します。
+```powershell
+uv run python .\accounting_pdf_sorter.py ".\invoices" --output-dir ".\sorted"
+```
+
+複数ページPDFを分割したくない場合:
 
 ```powershell
 uv run python .\accounting_pdf_sorter.py --no-split-pages
 ```
 
-別フォルダで試したい場合だけ、入力フォルダと出力フォルダを明示します。
+## OCR/抽出エンジン
+
+既定は `--extractor auto` です。通常運用では引数指定なしで構いません。
 
 ```powershell
-uv run python .\accounting_pdf_sorter.py ".\another_input" --output-dir ".\another_output"
+uv run python .\accounting_pdf_sorter.py --extractor auto
 ```
 
-実行フォルダ名を固定したい場合は `--run-name` を指定します。
+ローカルだけで動かす:
 
 ```powershell
-uv run python .\accounting_pdf_sorter.py --run-name "2026-04月分_確認01"
+uv run python .\accounting_pdf_sorter.py --extractor local
 ```
 
-### 読み取りロジック
+Azure Document Intelligenceだけを使う:
 
-PDF本文を `pdfplumber` で抽出し、文字が取れない画像PDFやPNG/JPGは `pytesseract` でOCRします。OCRできない場合でも、ファイル名と親フォルダ名から日付・相手先・金額・書類種別を補います。
+```powershell
+$env:AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://<your-resource>.cognitiveservices.azure.com"
+$env:AZURE_DOCUMENT_INTELLIGENCE_KEY="<your-key>"
+uv run python .\accounting_pdf_sorter.py --extractor azure
+```
 
-- `bank_transfer`: `振込日`、`振込金額`、`振込先`、`受取人名`、`振込明細`
-- `invoice`: `請求書`、`請求金額`、`お支払期限`、`インボイス`
-- `receipt`: `領収書`、`領収証`、`レシート`
-- `expense_claim`: `経費申請`、`立替経費`、`外注費`、`出張宿泊費`
-- `credit_card_statement`: `クレジットカード`、`カード利用`、`楽天カード`
-- `payment_notice`: `検収通知書`、`支払通知書`、`入金予定`
-- `quote`: `見積書`
-- `purchase_order`: `注文書`、`発注書`
-- `statement`: `利用明細`、`取引明細`、`入出金明細`
-- `tax`: `適格請求書`、`登録番号`、`消費税`
-- `payroll`: `給与`、`源泉所得税`、`社会保険料`
-- `contract`: `契約書`
-- `unknown`: 明示キーワードが見つからないPDF
+Azure設定後の通常実行:
 
-### 出力ロジック
+```powershell
+uv run python .\accounting_pdf_sorter.py
+```
 
-出力先はデフォルトで `test_materials\output` です。実行ごとに時刻フォルダを作り、その中に添付用ファイルと一覧を作成します。
+Azureでは `prebuilt-invoice` モデルを使います。請求書OCRは専用モデルが日付・取引先・合計金額を返すため、Tesseractだけで日本語ラベルを拾うより運用が楽になりやすいです。
+
+## 出力例
+
+`test_materials/output` は事前に作らなくても構いません。実行時に自動生成されます。
 
 ```text
 test_materials/output/
-  YYYYMMDD_HHMMSS/
+  20260521_103000/
     attachments/
-      renamed.pdf
-      renamed.png
+      2026-04-13_株式会社サンプル_123456_invoice_original.pdf
     attachment_index.csv
     attachment_index.json
 ```
 
-日付が取れない場合はファイル名に `date_unknown` を使います。
+CSVには、会計確認で見たい最低限の項目を出します。
 
-### リネームロジック
+- `source_file`
+- `output_file`
+- `document_type`
+- `date`
+- `counterparty`
+- `amount`
+- `fee`
+- `page`
+- `page_count`
+- `confidence`
+- `extractor`
 
-ファイル名は以下の形式です。
+## 実装メモ
 
-```text
-YYYY-MM-DD_payee_amount_document_type_original-id.pdf
+実行コードは `accounting_pdf_sorter.py` に一本化しています。以前の単独テキスト抽出スクリプトは統合し、テストは `test_accounting_pdf_sorter.py` に置いています。
+
+このツールは最終的な勘定科目を自動確定するものではありません。目的は、PDF請求書を「人が探す・開く・転記する」前段階で、日付・取引先・金額つきの一覧にして確認負荷を下げることです。
+
+## テスト
+
+```powershell
+uv run python -m unittest -v
 ```
-
-例:
-
-```text
-2026-04-13_株式会社サンプル_123456_bank_transfer_0125_PJ34_0000426_202604131.pdf
-```
-
-抽出できない値は `date_unknown`、`payee_unknown`、`amount_unknown` を使います。複数ページを分割した場合は `_p01`、`_p02` のページ番号を付けます。同名ファイルがある場合は `_001`、`_002` の連番を付けます。
-
-総合振込明細のように1PDF内に複数の振込先がある場合、単一の支払先名は推測せず `payee_unknown` にします。金額と手数料は、明示された `本支店仕向`、`他行仕向` の合計欄から集計します。
-
-### 仕訳に向けた出力
-
-`attachment_index.csv` には、仕訳時に見たい `source_file`、`output_file`、`document_type`、`date`、`counterparty`、`amount`、`fee`、`page`、`page_count` を出力します。最終的な分類や勘定科目判断は人間が行う前提です。

@@ -1,6 +1,6 @@
 import unittest
-from uuid import uuid4
 from pathlib import Path
+from uuid import uuid4
 
 from accounting_pdf_sorter import (
     PreparedAttachment,
@@ -11,6 +11,8 @@ from accounting_pdf_sorter import (
     extract_common_details,
     iter_pdf_files,
     iter_source_files,
+    merge_details,
+    parse_azure_invoice_result,
 )
 
 TEST_TEMP_ROOT = Path("test_materials") / "unit_tests"
@@ -46,42 +48,52 @@ class AccountingPdfSorterTest(unittest.TestCase):
 
     def test_bank_transfer_summary_totals_are_extracted(self):
         text = """
-        令和 ８年 ４月１０日振込分の総合・給与振込の明細
-        本支店仕向 1 967120 220
-        他行仕向 1 66000 550
-        他行仕向 1 760320 550
-        他行仕向 1 1617000 550
+        本支店宛 1 967120 220
+        他行宛 1 66000 550
+        他行宛 1 760320 550
+        他行宛 1 1617000 550
         """
 
         details = extract_common_details(text, Path("0125_PJ34_0000426_202604131.pdf"))
 
-        self.assertEqual(details["date"], "2026-04-10")
+        self.assertEqual(details["date"], "2026-04-13")
         self.assertIsNone(details["payee"])
         self.assertEqual(details["amount"], "3410440")
         self.assertEqual(details["fee"], "1870")
 
     def test_unknown_values_are_not_guessed_except_filename_date(self):
-        details = extract_common_details("本文に明示ラベルなし", Path("sample_20260413.pdf"))
+        details = extract_common_details("本文に表示ラベルがない", Path("sample_20260413.pdf"))
 
         self.assertEqual(details["date"], "2026-04-13")
         self.assertIsNone(details["payee"])
         self.assertIsNone(details["amount"])
         self.assertIsNone(details["fee"])
 
-    def test_document_classification_uses_keywords(self):
-        document_type, confidence = classify_document("振込日 2026年4月13日 振込金額 10,000円 受取人名 A社")
+    def test_cloud_details_take_priority_over_local_hints(self):
+        details = extract_common_details(
+            "請求日 2026年4月1日 請求金額 10,000円",
+            Path("sample_20260413.pdf"),
+            {"date": "2026-04-30", "payee": "Azure Vendor", "amount": "25000", "fee": None},
+        )
 
-        self.assertEqual(document_type, "bank_transfer")
+        self.assertEqual(details["date"], "2026-04-30")
+        self.assertEqual(details["payee"], "Azure Vendor")
+        self.assertEqual(details["amount"], "25000")
+
+    def test_document_classification_uses_keywords(self):
+        document_type, confidence = classify_document("請求書 請求金額 10,000円 Invoice Total")
+
+        self.assertEqual(document_type, "invoice")
         self.assertGreater(confidence, 0)
 
     def test_filename_contains_sorting_parts(self):
         filename = build_new_filename(
             Path("original.pdf"),
-            "bank_transfer",
+            "invoice",
             {"date": "2026-04-13", "payee": "株式会社サンプル", "amount": "123456", "fee": "330"},
         )
 
-        self.assertEqual(filename, "2026-04-13_株式会社サンプル_123456_bank_transfer_original.pdf")
+        self.assertEqual(filename, "2026-04-13_株式会社サンプル_123456_invoice_original.pdf")
 
     def test_iter_pdf_files_reads_all_pdfs_under_input(self):
         root = temporary_workspace("iter_all")
@@ -111,7 +123,7 @@ class AccountingPdfSorterTest(unittest.TestCase):
         output_dir.mkdir(parents=True)
 
         pdf = input_dir / "receipt.pdf"
-        image = input_dir / "外注費申請画面_明細.png"
+        image = input_dir / "経費申請画面_明細.png"
         ignored = input_dir / "memo.txt"
         pdf.write_bytes(b"%PDF-1.4\n")
         image.write_bytes(b"not a real image")
@@ -165,6 +177,41 @@ class AccountingPdfSorterTest(unittest.TestCase):
         self.assertEqual(second.name, "20260520_104500_001")
         self.assertTrue(first.is_dir())
         self.assertTrue(second.is_dir())
+
+    def test_parse_azure_invoice_result_maps_invoice_fields(self):
+        result = parse_azure_invoice_result(
+            {
+                "status": "succeeded",
+                "analyzeResult": {
+                    "content": "Invoice text",
+                    "documents": [
+                        {
+                            "confidence": 0.93,
+                            "fields": {
+                                "InvoiceDate": {"valueDate": "2026-04-13"},
+                                "VendorName": {"valueString": "Contoso Japan"},
+                                "InvoiceTotal": {"valueCurrency": {"amount": 123456, "currencyCode": "JPY"}},
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(result.extractor, "azure-document-intelligence")
+        self.assertEqual(result.cloud_document_type, "invoice")
+        self.assertEqual(result.cloud_details["date"], "2026-04-13")
+        self.assertEqual(result.cloud_details["payee"], "Contoso Japan")
+        self.assertEqual(result.cloud_details["amount"], "123456")
+        self.assertEqual(result.cloud_confidence, 0.93)
+
+    def test_merge_details_fills_missing_values(self):
+        merged = merge_details(
+            {"date": "2026-04-13", "payee": None, "amount": "1000", "fee": None},
+            {"date": "2026-04-01", "payee": "Fallback", "amount": "999", "fee": "110"},
+        )
+
+        self.assertEqual(merged, {"date": "2026-04-13", "payee": "Fallback", "amount": "1000", "fee": "110"})
 
 
 if __name__ == "__main__":

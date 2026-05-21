@@ -11,4 +11,5 @@ Thumbs.db
 # virtual environment
 .venv
 
-test_materials/
+# test materials
+test_materials/*
