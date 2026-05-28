@@ -13,3 +13,7 @@ Thumbs.db
 
 # test materials
 test_materials/*
+
+# release packages
+release/
+*.zip
