@@ -2,20 +2,46 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+from pypdf import PdfReader, PdfWriter
+
 from accounting_pdf_sorter import (
-    PreparedAttachment,
+    ShichijushichiRecord,
     build_new_filename,
-    classify_document,
     create_run_output_dir,
-    execute_plan,
-    extract_common_details,
+    execute_record,
+    extract_record_details,
     iter_pdf_files,
-    iter_source_files,
-    merge_details,
-    parse_azure_invoice_result,
+    parse_recipient_rows,
+    parse_reiwa_transfer_date,
+    parse_summary_totals,
 )
 
+
 TEST_TEMP_ROOT = Path("test_materials") / "unit_tests"
+
+GENERAL_TRANSFER_TEXT = """
+203PJ340413
+総合振込明細表兼振込手数料のお知らせ
+令和 ８年 ４月１０日振込分の総合・給与振込の明細および振込手数料についてお知らせします。
+お 振 込 先 お 受 取 人 銀 行 支店
+金 額 受 取 人 番 号 備 考
+銀 行 名 支 店 名 科目 口座番号 受 取 人 名 番 号 番号
+ｼﾁｼﾞﾕｳｼﾁ ｾﾝﾀﾞｲﾋｶﾞｼｸﾞﾁ ﾌ 5278961 ｵｵﾀｶﾂﾋｺ 967120 0125 278
+合 計 手 数 料 （金額）
+同一店内仕向 0件 0円 0円
+本支店仕向 1 967120 220
+他行仕向 0 0 0
+合 計 1 967120 合 計 220
+"""
+
+PAYROLL_TEXT = """
+203PJ370427
+給与振込明細表兼振込手数料のお知らせ
+令和 ８年 ４月２４日振込分の総合・給与振込の明細および振込手数料についてお知らせします。
+ｼﾁｼﾞﾕｳｼﾁ ｲﾁﾊﾞﾝﾁﾖｳ ﾌ 5356873 ﾄﾖｼﾏｵｻﾑ 242030 0125 205 2016
+ｼﾁｼﾞﾕｳｼﾁ ｼﾝﾃﾝﾏﾁ ﾌ 9117857 ｱﾜｼﾞﾖｼｶｽﾞ 100000 0125 203 1001
+合 計 13 2979275 合 計 1320
+"""
 
 
 def temporary_workspace(name: str) -> Path:
@@ -25,80 +51,44 @@ def temporary_workspace(name: str) -> Path:
     return workspace
 
 
-class AccountingPdfSorterTest(unittest.TestCase):
-    def test_bank_transfer_details_are_extracted_from_labeled_text(self):
-        text = """
-        振込日 2026年4月13日
-        振込先名 株式会社サンプル
-        振込金額 123,456円
-        振込手数料 330円
-        """
+class ShichijushichiStatementSorterTest(unittest.TestCase):
+    def test_reiwa_transfer_date_is_converted_to_iso_date(self):
+        self.assertEqual(parse_reiwa_transfer_date(GENERAL_TRANSFER_TEXT), "2026-04-10")
 
-        details = extract_common_details(text, Path("0125_PJ34_0000426_202604131.pdf"))
+    def test_summary_totals_are_extracted(self):
+        self.assertEqual(parse_summary_totals(GENERAL_TRANSFER_TEXT), (1, "967120", "220"))
+
+    def test_recipient_row_is_extracted_and_normalized(self):
+        self.assertEqual(parse_recipient_rows(GENERAL_TRANSFER_TEXT), [("オオタカツヒコ", "967120")])
+
+    def test_general_transfer_record_details_match_requested_filename_parts(self):
+        details = extract_record_details(GENERAL_TRANSFER_TEXT, Path("0125_PJ34_0000426_202604131.pdf"))
 
         self.assertEqual(
             details,
             {
-                "date": "2026-04-13",
-                "payee": "株式会社サンプル",
-                "amount": "123456",
-                "fee": "330",
+                "transfer_date": "2026-04-10",
+                "recipient": "オオタカツヒコ",
+                "amount": "967120",
+                "fee": "220",
+                "statement_type": "general_transfer",
             },
         )
+        self.assertEqual(build_new_filename(details), "20260410_オオタカツヒコ_967120_220.pdf")
 
-    def test_bank_transfer_summary_totals_are_extracted(self):
-        text = """
-        本支店宛 1 967120 220
-        他行宛 1 66000 550
-        他行宛 1 760320 550
-        他行宛 1 1617000 550
-        """
+    def test_payroll_uses_summary_amount_and_payroll_recipient(self):
+        details = extract_record_details(PAYROLL_TEXT, Path("0125_PJ37_0000555_202604271.pdf"))
 
-        details = extract_common_details(text, Path("0125_PJ34_0000426_202604131.pdf"))
+        self.assertEqual(details["transfer_date"], "2026-04-24")
+        self.assertEqual(details["recipient"], "給与")
+        self.assertEqual(details["amount"], "2979275")
+        self.assertEqual(details["fee"], "1320")
+        self.assertEqual(details["statement_type"], "payroll")
 
-        self.assertEqual(details["date"], "2026-04-13")
-        self.assertIsNone(details["payee"])
-        self.assertEqual(details["amount"], "3410440")
-        self.assertEqual(details["fee"], "1870")
-
-    def test_unknown_values_are_not_guessed_except_filename_date(self):
-        details = extract_common_details("本文に表示ラベルがない", Path("sample_20260413.pdf"))
-
-        self.assertEqual(details["date"], "2026-04-13")
-        self.assertIsNone(details["payee"])
-        self.assertIsNone(details["amount"])
-        self.assertIsNone(details["fee"])
-
-    def test_cloud_details_take_priority_over_local_hints(self):
-        details = extract_common_details(
-            "請求日 2026年4月1日 請求金額 10,000円",
-            Path("sample_20260413.pdf"),
-            {"date": "2026-04-30", "payee": "Azure Vendor", "amount": "25000", "fee": None},
-        )
-
-        self.assertEqual(details["date"], "2026-04-30")
-        self.assertEqual(details["payee"], "Azure Vendor")
-        self.assertEqual(details["amount"], "25000")
-
-    def test_document_classification_uses_keywords(self):
-        document_type, confidence = classify_document("請求書 請求金額 10,000円 Invoice Total")
-
-        self.assertEqual(document_type, "invoice")
-        self.assertGreater(confidence, 0)
-
-    def test_filename_contains_sorting_parts(self):
-        filename = build_new_filename(
-            Path("original.pdf"),
-            "invoice",
-            {"date": "2026-04-13", "payee": "株式会社サンプル", "amount": "123456", "fee": "330"},
-        )
-
-        self.assertEqual(filename, "2026-04-13_株式会社サンプル_123456_invoice_original.pdf")
-
-    def test_iter_pdf_files_reads_all_pdfs_under_input(self):
-        root = temporary_workspace("iter_all")
-        input_dir = root / "test_materials" / "input"
-        output_dir = root / "test_materials" / "output"
+    def test_iter_pdf_files_only_reads_pdf_and_skips_output_folder(self):
+        root = temporary_workspace("iter_pdf")
+        input_dir = root / "input"
+        output_dir = input_dir / "output"
         nested_dir = input_dir / "nested"
         nested_dir.mkdir(parents=True)
         output_dir.mkdir(parents=True)
@@ -115,56 +105,36 @@ class AccountingPdfSorterTest(unittest.TestCase):
 
         self.assertEqual(iter_pdf_files(input_dir, output_dir), sorted([top_pdf, nested_pdf]))
 
-    def test_iter_source_files_reads_supported_images(self):
-        root = temporary_workspace("iter_images")
-        input_dir = root / "input"
-        output_dir = root / "output"
-        input_dir.mkdir(parents=True)
-        output_dir.mkdir(parents=True)
+    def test_execute_record_writes_only_the_requested_page(self):
+        root = temporary_workspace("split")
+        source = root / "source.pdf"
+        destination = root / "output" / "page2.pdf"
 
-        pdf = input_dir / "receipt.pdf"
-        image = input_dir / "経費申請画面_明細.png"
-        ignored = input_dir / "memo.txt"
-        pdf.write_bytes(b"%PDF-1.4\n")
-        image.write_bytes(b"not a real image")
-        ignored.write_text("ignore", encoding="utf-8")
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.add_blank_page(width=144, height=144)
+        with source.open("wb") as output_file:
+            writer.write(output_file)
 
-        self.assertEqual(iter_source_files(input_dir, output_dir), sorted([pdf, image]))
-
-    def test_iter_pdf_files_skips_output_inside_input(self):
-        root = temporary_workspace("skip_output")
-        input_dir = root / "input"
-        output_dir = input_dir / "output"
-        output_dir.mkdir(parents=True)
-
-        source_pdf = input_dir / "source.pdf"
-        sorted_pdf = output_dir / "sorted.pdf"
-        source_pdf.write_bytes(b"%PDF-1.4\n")
-        sorted_pdf.write_bytes(b"%PDF-1.4\n")
-
-        self.assertEqual(iter_pdf_files(input_dir, output_dir), [source_pdf])
-
-    def test_execute_plan_copies_without_removing_source(self):
-        root = temporary_workspace("copy")
-        source = root / "input.pdf"
-        destination = root / "output" / "renamed.pdf"
-        source.write_bytes(b"%PDF-1.4\n")
-        plan = PreparedAttachment(
+        record = ShichijushichiRecord(
             source=str(source),
             destination=str(destination),
-            document_type="receipt",
             new_name=destination.name,
-            confidence=1.0,
-            page=None,
-            page_count=1,
-            extracted={"date": None, "payee": None, "amount": None, "fee": None},
-            journal_hint={"date": None, "debit_account": None, "credit_account": None},
+            transfer_date="2026-04-10",
+            recipient="テスト",
+            amount="100",
+            fee="0",
+            statement_type="general_transfer",
+            page=2,
+            page_count=2,
+            extractor="pdfplumber",
         )
 
-        execute_plan(plan, dry_run=False)
+        execute_record(record, dry_run=False)
 
-        self.assertTrue(source.exists())
-        self.assertEqual(destination.read_bytes(), b"%PDF-1.4\n")
+        reader = PdfReader(str(destination))
+        self.assertEqual(len(reader.pages), 1)
+        self.assertEqual(float(reader.pages[0].mediabox.width), 144.0)
 
     def test_create_run_output_dir_uses_unique_timestamp_folder(self):
         root = temporary_workspace("run_dir")
@@ -177,41 +147,6 @@ class AccountingPdfSorterTest(unittest.TestCase):
         self.assertEqual(second.name, "20260520_104500_001")
         self.assertTrue(first.is_dir())
         self.assertTrue(second.is_dir())
-
-    def test_parse_azure_invoice_result_maps_invoice_fields(self):
-        result = parse_azure_invoice_result(
-            {
-                "status": "succeeded",
-                "analyzeResult": {
-                    "content": "Invoice text",
-                    "documents": [
-                        {
-                            "confidence": 0.93,
-                            "fields": {
-                                "InvoiceDate": {"valueDate": "2026-04-13"},
-                                "VendorName": {"valueString": "Contoso Japan"},
-                                "InvoiceTotal": {"valueCurrency": {"amount": 123456, "currencyCode": "JPY"}},
-                            },
-                        }
-                    ],
-                },
-            }
-        )
-
-        self.assertEqual(result.extractor, "azure-document-intelligence")
-        self.assertEqual(result.cloud_document_type, "invoice")
-        self.assertEqual(result.cloud_details["date"], "2026-04-13")
-        self.assertEqual(result.cloud_details["payee"], "Contoso Japan")
-        self.assertEqual(result.cloud_details["amount"], "123456")
-        self.assertEqual(result.cloud_confidence, 0.93)
-
-    def test_merge_details_fills_missing_values(self):
-        merged = merge_details(
-            {"date": "2026-04-13", "payee": None, "amount": "1000", "fee": None},
-            {"date": "2026-04-01", "payee": "Fallback", "amount": "999", "fee": "110"},
-        )
-
-        self.assertEqual(merged, {"date": "2026-04-13", "payee": "Fallback", "amount": "1000", "fee": "110"})
 
 
 if __name__ == "__main__":
