@@ -91,7 +91,7 @@ def format_date_for_filename(value: str | None) -> str:
 
 def parse_reiwa_transfer_date(text: str) -> str | None:
     normalized = normalize_digits(text)
-    match = re.search(r"令和\s*(\d{1,2})年\s*(\d{1,2})月\s*(\d{1,2})日振込分", normalized)
+    match = re.search(r"令和\s*(\d{1,2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*振込分", normalized)
     if not match:
         return None
 

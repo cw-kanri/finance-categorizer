@@ -55,6 +55,11 @@ class ShichijushichiStatementSorterTest(unittest.TestCase):
     def test_reiwa_transfer_date_is_converted_to_iso_date(self):
         self.assertEqual(parse_reiwa_transfer_date(GENERAL_TRANSFER_TEXT), "2026-04-10")
 
+    def test_reiwa_transfer_date_allows_space_before_transfer_label(self):
+        text = "令和　８年　４月２４日　振込分の総合・給与振込の明細"
+
+        self.assertEqual(parse_reiwa_transfer_date(text), "2026-04-24")
+
     def test_summary_totals_are_extracted(self):
         self.assertEqual(parse_summary_totals(GENERAL_TRANSFER_TEXT), (1, "967120", "220"))
 

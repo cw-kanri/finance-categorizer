@@ -53,7 +53,7 @@ uv --version
 PowerShellで、zipを展開したフォルダへ移動します。
 
 ```powershell
-cd $HOME\Documents\finance-categorizer
+cd $HOME\Documents\'finance-categorizer-v1.0.0'
 ```
 
 展開先を変えた場合は、その場所に合わせて `cd` の後ろを書き換えてください。
